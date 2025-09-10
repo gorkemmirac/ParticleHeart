@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Kalp Partikül Animasyonu</title>
+<style>
+  html,body{
+    height:100%;
+    margin:0;
+    background:#1b1520; /* koyu arka plan */
+    font-family: Inter, system-ui, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    -moz-osx-font-smoothing:grayscale;
+  }
+
+  #app {
+    position:relative;
+    height:100vh;
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    overflow:hidden;
+  }
+
+  canvas{
+    display:block;
+    width:100%;
+    height:100%;
+    cursor:grab;
+  }
+
+  canvas:active { cursor:grabbing; }
+
+  .hint {
+    position:absolute;
+    left:16px;
+    bottom:16px;
+    color:#ddd;
+    font-size:13px;
+    opacity:0.9;
+    background:rgba(0,0,0,0.25);
+    padding:8px 10px;
+    border-radius:8px;
+    backdrop-filter: blur(6px);
+  }
+</style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="c"></canvas>
+    <div class="hint">Tıkla veya 'C' tuşuna bas — her kalp partiküllerle oluşacak. 6. basışta tüm kalpler kaybolur.</div>
+  </div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: true });
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+function resize(){
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  canvas.style.width = w + 'px';
+  canvas.style.height = h + 'px';
+  canvas.width = Math.round(w * DPR);
+  canvas.height = Math.round(h * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Parametrik kalp eğrisi
+function heartPoint(t){
+  const x = 16 * Math.pow(Math.sin(t),3);
+  const y = 13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t);
+  return {x, y:-y};
+}
+function generateHeartVertices(count, scale=8){
+  const pts=[];
+  for(let i=0;i<count;i++){
+    const t = i/count*Math.PI*2;
+    const p = heartPoint(t);
+    pts.push({x:p.x*scale, y:p.y*scale});
+  }
+  return pts;
+}
+
+// Particle sınıfı
+class Particle {
+  constructor(x,y,tx,ty){
+    this.x=x; this.y=y;
+    this.vx=(Math.random()-0.5)*0.5;
+    this.vy=(Math.random()-0.5)*0.5;
+    this.tx=tx; this.ty=ty;
+    this.size=2+Math.random()*2;
+    this.baseSize=this.size;
+    this.alpha=1;
+    this.col=`rgba(255,${120+Math.round(Math.random()*60)},${160+Math.round(Math.random()*60)},`;
+    this.phase=Math.random()*Math.PI*2;
+  }
+
+  update(dt, worldTarget, collect){
+    this.phase+=dt*6;
+    const ox=Math.cos(this.phase)*0.6;
+    const oy=Math.sin(this.phase)*0.6;
+
+    if(!collect){
+      const targetX = worldTarget.x + this.tx + ox;
+      const targetY = worldTarget.y + this.ty + oy;
+      const ax=(targetX-this.x)*0.02;
+      const ay=(targetY-this.y)*0.02;
+      this.vx+=ax; this.vy+=ay;
+      this.vx*=0.92; this.vy*=0.92;
+      this.x+=this.vx; this.y+=this.vy;
+      this.size+=(this.baseSize-this.size)*0.08;
+      this.alpha+=(1-this.alpha)*0.08;
+    } else {
+      const dx=worldTarget.x-this.x;
+      const dy=worldTarget.y-this.y;
+      const dist=Math.sqrt(dx*dx+dy*dy)+0.0001;
+      const force=50/(dist+20);
+      this.vx+=(dx/dist)*force*0.05;
+      this.vy+=(dy/dist)*force*0.05;
+      this.vx*=0.92; this.vy*=0.92;
+      this.x+=this.vx; this.y+=this.vy;
+      this.size*=0.96; this.alpha*=0.96;
+      if(this.size<0.05) this.size=0.05;
+    }
+  }
+
+  draw(ctx){
+    ctx.beginPath();
+    ctx.fillStyle=this.col+(this.alpha*0.95)+')';
+    ctx.arc(this.x,this.y,this.size,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+// Çoklu kalp yönetimi
+const MAX_HEARTS = 5;
+let heartVertices = generateHeartVertices(600, 7.8);
+let hearts = []; // her kalp bir particle grubu
+let clickCount = 0;
+
+let heartCenter = {x: window.innerWidth/2, y: window.innerHeight/2-30};
+let targetCenter = {...heartCenter};
+let dragging=false, dragOffset={x:0,y:0};
+
+// Particle üret
+function createHeartParticles(scale=7.8){
+  const vertices = generateHeartVertices(600, scale);
+  const particles=[];
+  for(let i=0;i<vertices.length;i++){
+    const v=vertices[i];
+    const rx=heartCenter.x+(Math.random()-0.5)*canvas.width/3;
+    const ry=heartCenter.y+(Math.random()-0.5)*canvas.height/3;
+    const jitter=(Math.random()-0.5)*2.2;
+    const p=new Particle(rx,ry,v.x+jitter,v.y+jitter);
+    particles.push(p);
+  }
+  return particles;
+}
+
+// Fare/touch sürükleme
+canvas.addEventListener('mousedown', (e)=>{
+  dragging=true; canvas.style.cursor='grabbing';
+  const r = canvas.getBoundingClientRect();
+  dragOffset.x = heartCenter.x - (e.clientX-r.left);
+  dragOffset.y = heartCenter.y - (e.clientY-r.top);
+});
+window.addEventListener('mouseup', ()=>{dragging=false; canvas.style.cursor='grab';});
+window.addEventListener('mousemove', (e)=>{
+  if(!dragging) return;
+  const r = canvas.getBoundingClientRect();
+  heartCenter.x = e.clientX-r.left + dragOffset.x;
+  heartCenter.y = e.clientY-r.top + dragOffset.y;
+});
+canvas.addEventListener('touchstart', (e)=>{
+  e.preventDefault(); dragging=true;
+  const t = e.touches[0]; const r=canvas.getBoundingClientRect();
+  dragOffset.x=heartCenter.x-(t.clientX-r.left);
+  dragOffset.y=heartCenter.y-(t.clientY-r.top);
+});
+canvas.addEventListener('touchmove', (e)=>{
+  e.preventDefault(); if(!dragging) return;
+  const t=e.touches[0]; const r=canvas.getBoundingClientRect();
+  heartCenter.x=t.clientX-r.left+dragOffset.x;
+  heartCenter.y=t.clientY-r.top+dragOffset.y;
+});
+window.addEventListener('touchend', ()=>{dragging=false;});
+
+// Click / C tuşu
+canvas.addEventListener('click', handleClick);
+window.addEventListener('keydown',(e)=>{if(e.key.toLowerCase()==='c') handleClick();});
+
+function handleClick(){
+  clickCount++;
+  if(clickCount<=MAX_HEARTS){
+    // Yeni kalp partikülleri oluştur
+    const scale=7.8 + clickCount*1.5;
+    const newHeart=createHeartParticles(scale);
+    hearts.push({particles:newHeart, center:{...heartCenter}});
+  } else if(clickCount===MAX_HEARTS+1){
+    // 6.basışta tüm kalpler yok olsun
+    for(let h of hearts){
+      for(let p of h.particles){
+        p.collect=true; // partiküller merkeze çekilsin
+      }
+    }
+  }
+}
+
+// Animasyon döngüsü
+let last = performance.now();
+function loop(now){
+  const dt=Math.min(0.05,(now-last)/1000);
+  last=now;
+
+  targetCenter.x += (heartCenter.x-targetCenter.x)*0.18;
+  targetCenter.y += (heartCenter.y-targetCenter.y)*0.18;
+
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle='#1b1520'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // Tüm kalpleri çiz
+  for(let h of hearts){
+    for(let p of h.particles){
+      if(p.collect){
+        p.update(dt,targetCenter,true);
+      } else {
+        p.update(dt,h.center,false);
+      }
+      p.draw(ctx);
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
